@@ -27,11 +27,20 @@ CONFIG_PATH = Path(__file__).parent / ".env.json"
 
 
 def load_config():
-    """Load API credentials from .env.json or environment variables."""
+    """Load API credentials from .env.json, environment variables, or st.secrets."""
     config = {
         "access_token": os.environ.get("PORTPRO_ACCESS_TOKEN", ""),
         "refresh_token": os.environ.get("PORTPRO_REFRESH_TOKEN", ""),
     }
+    # Streamlit Cloud stores secrets via st.secrets (TOML-based)
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            config["access_token"] = config["access_token"] or st.secrets.get("PORTPRO_ACCESS_TOKEN", "")
+            config["refresh_token"] = config["refresh_token"] or st.secrets.get("PORTPRO_REFRESH_TOKEN", "")
+    except Exception:
+        pass
+    # Local .env.json overrides everything when present
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH) as f:
             file_config = json.load(f)
