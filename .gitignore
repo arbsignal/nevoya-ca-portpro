@@ -1,0 +1,25 @@
+# Secrets — NEVER commit API keys
+dashboard/.env.json
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE / OS
+.claude/
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Screenshots (large binaries)
+dashboard/screenshots/
+dashboard/dashboard_*.png
+metabase_screenshots/
+
+# Streamlit cache
+.streamlit/
