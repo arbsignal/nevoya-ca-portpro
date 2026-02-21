@@ -376,24 +376,38 @@ with tab_weekly:
             st.dataframe(style_risk_table(tbl), use_container_width=True, hide_index=True, height=460)
 
         # ----------------------------------------------------------
-        # Reconciliation Table (temporary — for audit against Serena)
+        # Raw Load Audit (shows ALL loads for this week, unfiltered)
         # ----------------------------------------------------------
-        with st.expander(f"Reconciliation: {len(week_loads)} loads counted for week of {selected_week}", expanded=False):
-            st.caption("Every unique Load ID included in this week's totals. Compare against Serena's manual export.")
-            if not week_loads.empty:
+        all_week_loads = cleaned_df[cleaned_df["week_start"] == selected_week]
+        audit_count = len(all_week_loads)
+        with st.expander(f"Raw Load Audit: {audit_count} loads found for week of {selected_week}", expanded=True):
+            st.caption(
+                "Every Load ID the system found for the selected week, "
+                "with normalized Customer Name and Completion Date. "
+                "If a customer shows 0 in the table above but appears here, "
+                "the name normalization or filter is the issue."
+            )
+            if not all_week_loads.empty:
                 recon_cols = ["load_id", "customer_name", "completed_date", "pricing_total", "lane"]
-                recon = week_loads[[c for c in recon_cols if c in week_loads.columns]].copy()
+                recon = all_week_loads[[c for c in recon_cols if c in all_week_loads.columns]].copy()
                 recon = recon.rename(columns={
                     "load_id": "LOAD_ID", "customer_name": "CUSTOMER",
                     "completed_date": "COMPLETED_DATE", "pricing_total": "REVENUE",
                     "lane": "LANE",
                 })
                 if "REVENUE" in recon.columns:
-                    recon["REVENUE"] = recon["REVENUE"].apply(lambda x: f"{x:,.0f}")
+                    recon["REVENUE"] = recon["REVENUE"].apply(lambda x: f"${x:,.0f}")
                 recon = recon.sort_values(["CUSTOMER", "LOAD_ID"]).reset_index(drop=True)
                 st.dataframe(recon, use_container_width=True, hide_index=True, height=400)
+
+                # Summary by customer for quick cross-check
+                summary = recon.groupby("CUSTOMER").agg(
+                    LOADS=("LOAD_ID", "count"),
+                ).reset_index().sort_values("LOADS", ascending=False).reset_index(drop=True)
+                st.caption("Summary by Customer:")
+                st.dataframe(summary, use_container_width=True, hide_index=True)
             else:
-                st.info("No loads for this week.")
+                st.warning("0 loads found for this week. Check if loadCompletedAt dates exist for this period.")
     else:
         st.info("No weekly data available.")
 
@@ -705,7 +719,7 @@ with tab_method:
 <h3>Week Definition</h3>
 <ul>
     <li><strong>Week:</strong> Monday through Sunday (7 days)</li>
-    <li>All weekly metrics use <code>createdAt</code> to determine which week a load belongs to</li>
+    <li>All weekly metrics use <code>loadCompletedAt</code> (delivery date) to determine which week a load belongs to</li>
 </ul>
 <h3>Always-Visible Customers</h3>
 <ul>
@@ -722,7 +736,7 @@ with tab_method:
 <h3>Weekly Summary KPIs</h3>
 <ul>
     <li><strong>Total Loads:</strong> Count of distinct loads completed in the selected week</li>
-    <li><strong>Total Revenue:</strong> Sum of <code>pricing.finalAmount</code> (all charge line items)</li>
+    <li><strong>Total Revenue:</strong> <code>totalAmount</code> (all-in rate per load)</li>
     <li><strong>Avg Revenue/Load:</strong> Total Revenue &divide; Total Loads</li>
     <li><strong>OTP %:</strong> % of pickup stops arriving at or before appointment time</li>
     <li><strong>OTD %:</strong> % of delivery stops arriving at or before appointment time</li>
@@ -738,7 +752,7 @@ with tab_method:
 <table class="method-table">
     <tr><th>Metric</th><th>Calculation</th></tr>
     <tr><td>Weekly Loads</td><td>Distinct loads completed this week (0 if none)</td></tr>
-    <tr><td>Weekly Revenue</td><td>Sum of <code>pricing.finalAmount</code> (base rate)</td></tr>
+    <tr><td>Weekly Revenue</td><td>Sum of <code>totalAmount</code> (all-in rate per load)</td></tr>
     <tr><td>WoW Load Change %</td><td>(current_week - prior_week) / prior_week &times; 100</td></tr>
     <tr><td>Uncontrollable Events</td><td>Count of non-Nevoya-driven delays (currently counting all delays)</td></tr>
     <tr><td>Volume Trend</td><td><strong>UP</strong> if loads &gt; 110% of trailing 4-week avg, <strong>DOWN</strong> if &lt; 90%, else <strong>STABLE</strong></td></tr>

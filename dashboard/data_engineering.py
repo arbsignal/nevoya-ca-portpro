@@ -105,6 +105,25 @@ def classify_exception(load):
 
 
 # ------------------------------------------------------------------
+# 2b. CUSTOMER NAME NORMALIZATION
+# ------------------------------------------------------------------
+
+def normalize_name(name):
+    """Normalize a customer name for reliable join matching.
+
+    Strips punctuation (dots, commas), converts to UPPERCASE, and trims
+    whitespace so that "C.H. Robinson", "C.H. ROBINSON", and
+    "CH ROBINSON" all resolve to "CH ROBINSON".
+    """
+    if not name or (isinstance(name, float) and pd.isna(name)):
+        return "UNKNOWN"
+    s = str(name)
+    s = re.sub(r"[.\,]", "", s)   # strip dots and commas
+    s = re.sub(r"\s+", " ", s)     # collapse whitespace
+    return s.strip().upper()
+
+
+# ------------------------------------------------------------------
 # 3. FLATTEN RAW API → DataFrame
 # ------------------------------------------------------------------
 
@@ -114,15 +133,32 @@ def flatten_loads(raw_loads):
     Critical design decisions:
       - Date: uses ``loadCompletedAt`` (not ``createdAt``) so a load
         created in January but delivered in February counts in February.
+        Falls back to ``deliveryTimes`` appointment if loadCompletedAt is
+        missing but the status indicates completion.
       - Revenue: uses ``totalAmount`` (the all-in rate) — **not** the sum
         of individual ``pricing`` charge-code line items.
-      - Only loads with a ``loadCompletedAt`` value are included (those
-        are the ones that have actually been delivered).
+      - Only loads with a completion date are included.
+      - Customer names are normalized (uppercase, no punctuation) so
+        "C.H. Robinson" and "C.H. ROBINSON" both become "CH ROBINSON".
     """
     records = []
+    completed_statuses = {"COMPLETED", "BILLING", "APPROVED"}
     for load in raw_loads:
         # --- Completion date (source of truth) ---
         completed_at = load.get("loadCompletedAt") or load.get("loadCompletedDate") or ""
+
+        # Fallback: if load is in a completed status but loadCompletedAt is
+        # missing, try the first deliveryTimes entry or updatedAt.
+        if not completed_at and load.get("status", "") in completed_statuses:
+            dt_list = load.get("deliveryTimes") or []
+            if isinstance(dt_list, list):
+                for dt_entry in dt_list:
+                    completed_at = dt_entry.get("deliveryFromTime", "") or ""
+                    if completed_at:
+                        break
+            if not completed_at:
+                completed_at = load.get("updatedAt", "")
+
         if not completed_at:
             continue  # skip loads that haven't been completed yet
 
@@ -144,7 +180,7 @@ def flatten_loads(raw_loads):
 
         records.append({
             "load_id": load.get("reference_number", ""),
-            "customer_name": load.get("callerName", "Unknown"),
+            "customer_name": normalize_name(load.get("callerName", "Unknown")),
             "customer_id": load.get("caller", {}).get("_id", "") if isinstance(load.get("caller"), dict) else "",
             "shipper_name": load.get("shipperName", ""),
             "consignee_name": load.get("consigneeName", ""),
@@ -172,10 +208,15 @@ def flatten_loads(raw_loads):
 
 def build_customer_master(raw_customers):
     records = []
+    seen_names = set()
     for cust in raw_customers:
+        name = normalize_name(cust.get("company_name", "Unknown"))
+        if name in seen_names:
+            continue  # deduplicate after normalization (e.g. "IMC" and "IMC Logistics")
+        seen_names.add(name)
         records.append({
             "id": cust.get("_id", ""),
-            "name": cust.get("company_name", "Unknown"),
+            "name": name,
             "tier": 2,
             "is_broker": True,
         })

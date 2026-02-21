@@ -113,18 +113,22 @@ class PortProClient:
         params = {"limit": limit, "skip": skip}
         return self._request("GET", "/loads", params=params)
 
-    def get_all_loads(self):
-        """Paginate through ALL loads using skip-based pagination."""
+    def get_all_loads(self, page_size=50):
+        """Paginate through ALL loads using skip-based pagination.
+
+        The API caps at 50 per page, so we use that as default and keep
+        paginating until an empty page is returned.
+        """
         all_loads = []
         skip = 0
         while True:
-            data = self.get_loads(limit=50, skip=skip)
+            data = self.get_loads(limit=page_size, skip=skip)
             loads = data.get("data", [])
             if not loads:
                 break
             all_loads.extend(loads)
             skip += len(loads)
-            if len(loads) < 50:
+            if len(loads) < page_size:
                 break
             time.sleep(0.3)
         return all_loads
