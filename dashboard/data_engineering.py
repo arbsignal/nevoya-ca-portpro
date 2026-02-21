@@ -109,26 +109,38 @@ def classify_exception(load):
 # ------------------------------------------------------------------
 
 def flatten_loads(raw_loads):
+    """Flatten raw API load dicts into a DataFrame.
+
+    Critical design decisions:
+      - Date: uses ``loadCompletedAt`` (not ``createdAt``) so a load
+        created in January but delivered in February counts in February.
+      - Revenue: uses ``totalAmount`` (the all-in rate) — **not** the sum
+        of individual ``pricing`` charge-code line items.
+      - Only loads with a ``loadCompletedAt`` value are included (those
+        are the ones that have actually been delivered).
+    """
     records = []
     for load in raw_loads:
+        # --- Completion date (source of truth) ---
+        completed_at = load.get("loadCompletedAt") or load.get("loadCompletedDate") or ""
+        if not completed_at:
+            continue  # skip loads that haven't been completed yet
+
+        completed_date = completed_at[:10]
+        week_start = ""
+        month_start = ""
+        try:
+            dt = datetime.strptime(completed_date, "%Y-%m-%d")
+            week_start = (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
+            month_start = dt.strftime("%Y-%m-01")
+        except ValueError:
+            continue
+
         pickup_city, pickup_state = resolve_pickup_city(load)
         delivery_city, delivery_state = resolve_delivery_city(load)
 
-        pricing = load.get("pricing", [])
-        total_revenue = sum(float(c.get("finalAmount", 0) or 0) for c in pricing) if pricing else float(load.get("totalAmount", 0) or 0)
-
-        created_at = load.get("createdAt", "")
-        created_date = created_at[:10] if created_at else ""
-
-        week_start = ""
-        month_start = ""
-        if created_date:
-            try:
-                dt = datetime.strptime(created_date, "%Y-%m-%d")
-                week_start = (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
-                month_start = dt.strftime("%Y-%m-01")
-            except ValueError:
-                pass
+        # --- Revenue: flat totalAmount (all-in rate) ---
+        total_revenue = float(load.get("totalAmount", 0) or 0)
 
         records.append({
             "load_id": load.get("reference_number", ""),
@@ -146,7 +158,7 @@ def flatten_loads(raw_loads):
             "total_weight": float(load.get("totalWeight", 0) or 0),
             "status": load.get("status", ""),
             "type_of_load": load.get("type_of_load", ""),
-            "created_date": created_date,
+            "completed_date": completed_date,
             "week_start": week_start,
             "month_start": month_start,
             "container_no": load.get("containerNo", ""),
@@ -416,22 +428,26 @@ def transform_loads(raw_loads_or_df, customer_master_or_df):
             else:
                 df["exception_label"] = ""
         if "month_start" not in df.columns:
-            date_col = "created_date" if "created_date" in df.columns else (
-                "completed_date" if "completed_date" in df.columns else None
-            )
-            if date_col:
-                df["month_start"] = pd.to_datetime(df[date_col], errors="coerce").dt.strftime("%Y-%m-01")
+            for date_col in ["completed_date", "created_date", "week_start"]:
+                if date_col in df.columns:
+                    df["month_start"] = pd.to_datetime(df[date_col], errors="coerce").dt.strftime("%Y-%m-01")
+                    break
 
     if isinstance(customer_master_or_df, list):
         customer_master = build_customer_master(customer_master_or_df)
     else:
         customer_master = customer_master_or_df.copy()
 
-    # Filter to completed/billing loads
-    completed_statuses = {"COMPLETED", "BILLING", "APPROVED"}
-    completed_df = df[df["status"].isin(completed_statuses)].copy() if "status" in df.columns else df.copy()
-    if completed_df.empty:
-        completed_df = df.copy()
+    # For live API data, flatten_loads() already filters to loads with
+    # loadCompletedAt, so every row here is a delivered load.
+    # For sample data (DataFrame input), fall back to status filtering.
+    if isinstance(raw_loads_or_df, list):
+        completed_df = df.copy()  # already filtered by flatten_loads
+    else:
+        completed_statuses = {"COMPLETED", "BILLING", "APPROVED", "Delivered"}
+        completed_df = df[df["status"].isin(completed_statuses)].copy() if "status" in df.columns else df.copy()
+        if completed_df.empty:
+            completed_df = df.copy()
 
     # Weekly aggregation
     weekly_customer = _skeleton_join(completed_df, customer_master, "week_start")

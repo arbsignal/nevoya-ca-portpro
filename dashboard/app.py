@@ -374,6 +374,26 @@ with tab_weekly:
             tbl["WEEKLY_REVENUE"] = tbl["WEEKLY_REVENUE"].apply(lambda x: f"{x:,.0f}")
             tbl = tbl.sort_values("WEEKLY_LOADS", ascending=False).reset_index(drop=True)
             st.dataframe(style_risk_table(tbl), use_container_width=True, hide_index=True, height=460)
+
+        # ----------------------------------------------------------
+        # Reconciliation Table (temporary — for audit against Serena)
+        # ----------------------------------------------------------
+        with st.expander(f"Reconciliation: {len(week_loads)} loads counted for week of {selected_week}", expanded=False):
+            st.caption("Every unique Load ID included in this week's totals. Compare against Serena's manual export.")
+            if not week_loads.empty:
+                recon_cols = ["load_id", "customer_name", "completed_date", "pricing_total", "lane"]
+                recon = week_loads[[c for c in recon_cols if c in week_loads.columns]].copy()
+                recon = recon.rename(columns={
+                    "load_id": "LOAD_ID", "customer_name": "CUSTOMER",
+                    "completed_date": "COMPLETED_DATE", "pricing_total": "REVENUE",
+                    "lane": "LANE",
+                })
+                if "REVENUE" in recon.columns:
+                    recon["REVENUE"] = recon["REVENUE"].apply(lambda x: f"{x:,.0f}")
+                recon = recon.sort_values(["CUSTOMER", "LOAD_ID"]).reset_index(drop=True)
+                st.dataframe(recon, use_container_width=True, hide_index=True, height=400)
+            else:
+                st.info("No loads for this week.")
     else:
         st.info("No weekly data available.")
 
