@@ -1,5 +1,6 @@
 # Secrets — NEVER commit API keys
 dashboard/.env.json
+dashboard/PortPro API
 .env
 .env.*
 
