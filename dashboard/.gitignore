@@ -1,0 +1,22 @@
+# Credentials
+.env.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+
+# Streamlit
+.streamlit/
+
+# Data & Temp
+*.xlsx
+screenshots/
+~$*.xlsx
+
+# Logs
+*.log
