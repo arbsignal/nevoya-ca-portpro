@@ -341,14 +341,20 @@ with tab_weekly:
         otp_pct = week_loads["on_time_pickup"].mean() * 100 if len(week_loads) > 0 else 0
         otd_pct = week_loads["on_time_delivery"].mean() * 100 if len(week_loads) > 0 else 0
 
-        # KPI Row: 3 cards + 2 gauges
-        k1, k2, k3, g1, g2 = st.columns([1, 1, 1, 1.2, 1.2])
+        # KPI Row: 4 cards + 2 gauges
+        k1, k2, k3, k4, g1, g2 = st.columns([1, 1, 1, 1, 1.2, 1.2])
         with k1:
             st.markdown(kpi_card("KPI Total Loads", f"{total_loads:,}"), unsafe_allow_html=True)
         with k2:
             st.markdown(kpi_card("KPI Total Revenue", f"${total_revenue:,.0f}"), unsafe_allow_html=True)
         with k3:
             st.markdown(kpi_card("KPI Avg Revenue", f"${avg_rev:,.1f}"), unsafe_allow_html=True)
+        with k4:
+            # Calculate overall CXL % for the KPI card
+            total_tendered = week_data["tendered"].sum()
+            total_cancelled = week_data["cancelled"].sum()
+            overall_cxl = (total_cancelled / total_tendered * 100) if total_tendered > 0 else 0
+            st.markdown(kpi_card("KPI CXL %", f"{overall_cxl:.1f}%"), unsafe_allow_html=True)
         with g1:
             st.plotly_chart(make_gauge(round(otp_pct, 1), "KPI OTP"), use_container_width=True)
         with g2:
@@ -359,12 +365,13 @@ with tab_weekly:
 
         if not week_data.empty:
             tbl = week_data[[
-                "customer_name", "loads", "revenue", "change_label",
+                "customer_name", "loads", "cxl_pct", "revenue", "change_label",
                 "uncontrollable_events", "volume_trend", "service_risk"
             ]].copy()
             tbl = tbl.rename(columns={
                 "customer_name": "CUSTOMER",
                 "loads": "WEEKLY_LOADS",
+                "cxl_pct": "CXL_%",
                 "revenue": "WEEKLY_REVENUE",
                 "change_label": "WOW_LOAD_CHANGE_PCT",
                 "uncontrollable_events": "UNCONTROLLABLE_EVENTS",
@@ -372,6 +379,7 @@ with tab_weekly:
                 "service_risk": "SERVICE_RISK",
             })
             tbl["WEEKLY_REVENUE"] = tbl["WEEKLY_REVENUE"].apply(lambda x: f"{x:,.0f}")
+            tbl["CXL_%"] = tbl["CXL_%"].apply(lambda x: f"{x:.1f}%")
             tbl = tbl.sort_values("WEEKLY_LOADS", ascending=False).reset_index(drop=True)
             st.dataframe(style_risk_table(tbl), use_container_width=True, hide_index=True, height=460)
 
@@ -452,14 +460,14 @@ with tab_monthly:
 
         st.markdown('<div class="section-header">Monthly Customer Performance</div>', unsafe_allow_html=True)
 
-        cols = ["customer_name", "loads", "revenue"]
+        cols = ["customer_name", "loads", "cxl_pct", "revenue"]
         if is_current and "run_rate_loads" in month_data.columns:
             cols += ["run_rate_loads", "run_rate_revenue"]
         cols += [c for c in ["volume_trend", "service_risk"] if c in month_data.columns]
 
         mtbl = month_data[[c for c in cols if c in month_data.columns]].copy()
         rename = {
-            "customer_name": "CUSTOMER", "loads": "MONTHLY_LOADS",
+            "customer_name": "CUSTOMER", "loads": "MONTHLY_LOADS", "cxl_pct": "CXL_%",
             "revenue": "MONTHLY_REVENUE", "run_rate_loads": "RUN_RATE_LOADS",
             "run_rate_revenue": "RUN_RATE_REVENUE",
             "volume_trend": "VOLUME_TREND", "service_risk": "SERVICE_RISK",
@@ -468,6 +476,8 @@ with tab_monthly:
         for col in ["MONTHLY_REVENUE", "RUN_RATE_REVENUE"]:
             if col in mtbl.columns:
                 mtbl[col] = mtbl[col].apply(lambda x: f"{x:,.0f}")
+        if "CXL_%" in mtbl.columns:
+            mtbl["CXL_%"] = mtbl["CXL_%"].apply(lambda x: f"{x:.1f}%")
         mtbl = mtbl.sort_values("MONTHLY_LOADS", ascending=False).reset_index(drop=True)
         st.dataframe(style_risk_table(mtbl), use_container_width=True, hide_index=True, height=460)
     else:
@@ -488,13 +498,15 @@ with tab_lane:
             wl = wl[wl["lane"].isin(selected_lanes)]
 
         if not wl.empty:
-            ltbl = wl[["customer_name", "lane", "volume", "revenue", "otd_pct"]].copy()
+            ltbl = wl[["customer_name", "lane", "volume", "cxl_pct", "revenue", "otd_pct"]].copy()
             ltbl = ltbl.rename(columns={
                 "customer_name": "CUSTOMER", "lane": "LANE",
-                "volume": "VOLUME", "revenue": "REVENUE", "otd_pct": "OTD_PCT",
+                "volume": "TENDERED", "cxl_pct": "CXL_%",
+                "revenue": "REVENUE", "otd_pct": "OTD_PCT",
             })
             ltbl["REVENUE"] = ltbl["REVENUE"].apply(lambda x: f"{x:,.0f}")
-            ltbl = ltbl.sort_values(["CUSTOMER", "VOLUME"], ascending=[True, False]).reset_index(drop=True)
+            ltbl["CXL_%"] = ltbl["CXL_%"].apply(lambda x: f"{x:.1f}%")
+            ltbl = ltbl.sort_values(["CUSTOMER", "TENDERED"], ascending=[True, False]).reset_index(drop=True)
             st.dataframe(ltbl, use_container_width=True, hide_index=True, height=520)
         else:
             st.info("No lane data for selected filters.")
@@ -521,19 +533,22 @@ with tab_bco:
 
         if not wb.empty:
             ba = wb.groupby(["customer_name", bco_col]).agg(
-                volume=("load_id", "count"),
+                tendered=("load_id", "count"),
+                cancelled=("status", lambda x: (x == "CANCELED").sum()),
                 revenue=("pricing_total", "sum"),
                 otd=("on_time_delivery", "mean"),
             ).reset_index()
             ba["otd_pct"] = (ba["otd"] * 100).round(1)
-
-            btbl = ba[["customer_name", bco_col, "volume", "revenue", "otd_pct"]].copy()
+            ba["cxl_pct"] = (ba["cancelled"] / ba["tendered"] * 100).fillna(0).round(1)
+            btbl = ba[["customer_name", bco_col, "tendered", "cxl_pct", "revenue", "otd_pct"]].copy()
             btbl = btbl.rename(columns={
                 "customer_name": "CUSTOMER", bco_col: "BCO",
-                "volume": "VOLUME", "revenue": "REVENUE", "otd_pct": "OTD_PCT",
+                "tendered": "TENDERED", "cxl_pct": "CXL_%",
+                "revenue": "REVENUE", "otd_pct": "OTD_PCT",
             })
             btbl["REVENUE"] = btbl["REVENUE"].apply(lambda x: f"{x:,.0f}")
-            btbl = btbl.sort_values(["CUSTOMER", "VOLUME"], ascending=[True, False]).reset_index(drop=True)
+            btbl["CXL_%"] = btbl["CXL_%"].apply(lambda x: f"{x:.1f}%")
+            btbl = btbl.sort_values(["CUSTOMER", "TENDERED"], ascending=[True, False]).reset_index(drop=True)
             st.dataframe(btbl, use_container_width=True, hide_index=True, height=520)
         else:
             st.info("No BCO data for selected filters.")
@@ -735,9 +750,10 @@ with tab_method:
 <div class="method-card">
 <h3>Weekly Summary KPIs</h3>
 <ul>
-    <li><strong>Total Loads:</strong> Count of distinct loads completed in the selected week</li>
+    <li><strong>Total Loads:</strong> Count of distinct loads <strong>completed</strong> in the selected week</li>
     <li><strong>Total Revenue:</strong> <code>totalAmount</code> (all-in rate per load)</li>
     <li><strong>Avg Revenue/Load:</strong> Total Revenue &divide; Total Loads</li>
+    <li><strong>Cancellation Rate %:</strong> (Cancelled Loads &divide; Total Tendered Loads) &times; 100</li>
     <li><strong>OTP %:</strong> % of pickup stops arriving at or before appointment time</li>
     <li><strong>OTD %:</strong> % of delivery stops arriving at or before appointment time</li>
 </ul>
@@ -752,6 +768,7 @@ with tab_method:
 <table class="method-table">
     <tr><th>Metric</th><th>Calculation</th></tr>
     <tr><td>Weekly Loads</td><td>Distinct loads completed this week (0 if none)</td></tr>
+    <tr><td>CXL %</td><td>Percentage of loads with status <code>CANCELED</code> relative to all tendered loads</td></tr>
     <tr><td>Weekly Revenue</td><td>Sum of <code>totalAmount</code> (all-in rate per load)</td></tr>
     <tr><td>WoW Load Change %</td><td>(current_week - prior_week) / prior_week &times; 100</td></tr>
     <tr><td>Uncontrollable Events</td><td>Count of non-Nevoya-driven delays (currently counting all delays)</td></tr>

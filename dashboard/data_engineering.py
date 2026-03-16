@@ -128,28 +128,24 @@ def normalize_name(name):
 # ------------------------------------------------------------------
 
 def flatten_loads(raw_loads):
-    """Flatten raw API load dicts into a DataFrame.
-
-    Critical design decisions:
-      - Date: uses ``loadCompletedAt`` (not ``createdAt``) so a load
-        created in January but delivered in February counts in February.
-        Falls back to ``deliveryTimes`` appointment if loadCompletedAt is
-        missing but the status indicates completion.
-      - Revenue: uses ``totalAmount`` (the all-in rate) — **not** the sum
-        of individual ``pricing`` charge-code line items.
-      - Only loads with a completion date are included.
-      - Customer names are normalized (uppercase, no punctuation) so
-        "C.H. Robinson" and "C.H. ROBINSON" both become "CH ROBINSON".
-    """
+    """Convert raw API load dicts into a flat DataFrame, including CANCELED loads."""
     records = []
+    # Statuses that count as "tendered"
+    tendered_statuses = {"COMPLETED", "BILLING", "APPROVED", "CANCELED", "DISPATCHED", "PENDING"}
     completed_statuses = {"COMPLETED", "BILLING", "APPROVED"}
+    
     for load in raw_loads:
-        # --- Completion date (source of truth) ---
+        status = load.get("status", "").upper()
+        if status not in tendered_statuses:
+            continue
+            
+        # --- Date logic ---
+        # For completed loads, use completion date.
+        # For cancelled or in-progress, use scheduled pickup or createdAt.
         completed_at = load.get("loadCompletedAt") or load.get("loadCompletedDate") or ""
-
-        # Fallback: if load is in a completed status but loadCompletedAt is
-        # missing, try the first deliveryTimes entry or updatedAt.
-        if not completed_at and load.get("status", "") in completed_statuses:
+        
+        # Fallback for completed statuses if date is missing
+        if not completed_at and status in completed_statuses:
             dt_list = load.get("deliveryTimes") or []
             if isinstance(dt_list, list):
                 for dt_entry in dt_list:
@@ -158,9 +154,13 @@ def flatten_loads(raw_loads):
                         break
             if not completed_at:
                 completed_at = load.get("updatedAt", "")
-
+        
+        # Final fallback for non-completed or if still missing
         if not completed_at:
-            continue  # skip loads that haven't been completed yet
+            completed_at = load.get("pickup_appointment") or load.get("createdAt") or ""
+            
+        if not completed_at:
+            continue
 
         completed_date = completed_at[:10]
         week_start = ""
@@ -245,7 +245,9 @@ def _skeleton_join(load_df, customer_master, period_col):
     skeleton = pd.DataFrame(skeleton_rows)
 
     agg = load_df.groupby(["customer_name", period_col]).agg(
-        loads=("load_id", "count"),
+        tendered=("load_id", "count"),
+        completed=("status", lambda x: x.isin({"COMPLETED", "BILLING", "APPROVED", "Delivered"}).sum()),
+        cancelled=("status", lambda x: (x == "CANCELED").sum()),
         revenue=("pricing_total", "sum"),
         avg_revenue=("pricing_total", "mean"),
         otp=("on_time_pickup", "mean"),
@@ -253,8 +255,18 @@ def _skeleton_join(load_df, customer_master, period_col):
         uncontrollable_events=("exception_label", lambda x: (x == "Uncontrollable Event").sum()),
     ).reset_index()
 
+    # Calculate Cancellation Rate %
+    agg["cxl_pct"] = (agg["cancelled"] / agg["tendered"] * 100).fillna(0).round(1)
+    # Rename 'tendered' to 'loads' for backward compatibility if needed, 
+    # but here we want to differentiate. For dashboard, 'loads' usually means completed.
+    # We'll use 'loads' as completed counts to avoid breaking existing UI.
+    agg["loads"] = agg["completed"]
+
     merged = skeleton.merge(agg, on=["customer_name", period_col], how="left")
     merged["loads"] = merged["loads"].fillna(0).astype(int)
+    merged["tendered"] = merged["tendered"].fillna(0).astype(int)
+    merged["cancelled"] = merged["cancelled"].fillna(0).astype(int)
+    merged["cxl_pct"] = merged["cxl_pct"].fillna(0.0)
     merged["revenue"] = merged["revenue"].fillna(0.0)
     merged["avg_revenue"] = merged["avg_revenue"].fillna(0.0)
     merged["otp"] = merged["otp"].fillna(np.nan)
@@ -479,40 +491,41 @@ def transform_loads(raw_loads_or_df, customer_master_or_df):
     else:
         customer_master = customer_master_or_df.copy()
 
-    # For live API data, flatten_loads() already filters to loads with
-    # loadCompletedAt, so every row here is a delivered load.
-    # For sample data (DataFrame input), fall back to status filtering.
-    if isinstance(raw_loads_or_df, list):
-        completed_df = df.copy()  # already filtered by flatten_loads
-    else:
-        completed_statuses = {"COMPLETED", "BILLING", "APPROVED", "Delivered"}
-        completed_df = df[df["status"].isin(completed_statuses)].copy() if "status" in df.columns else df.copy()
-        if completed_df.empty:
-            completed_df = df.copy()
-
-    # Weekly aggregation
-    weekly_customer = _skeleton_join(completed_df, customer_master, "week_start")
+    # Filter logic: include all tendered loads for volume/CXL tracking
+    # but separate completed loads for revenue/service tracking.
+    tendered_statuses = {"COMPLETED", "BILLING", "APPROVED", "CANCELED", "DISPATCHED", "PENDING", "Delivered"}
+    tendered_df = df[df["status"].isin(tendered_statuses)].copy() if "status" in df.columns else df.copy()
+    
+    # Weekly aggregation using tendered_df so we count cancellations
+    weekly_customer = _skeleton_join(tendered_df, customer_master, "week_start")
     if not weekly_customer.empty:
         weekly_customer = _add_wow_and_flags(weekly_customer, "week_start")
 
     # Monthly aggregation
-    monthly_customer = _skeleton_join(completed_df, customer_master, "month_start")
+    monthly_customer = _skeleton_join(tendered_df, customer_master, "month_start")
     if not monthly_customer.empty:
         monthly_customer = _add_wow_and_flags(monthly_customer, "month_start")
         monthly_customer = _add_run_rate(monthly_customer)
 
     # Lane performance (weekly)
     lane_df = pd.DataFrame()
-    if not completed_df.empty and "lane" in completed_df.columns:
-        lane_df = completed_df.groupby(["customer_name", "lane", "week_start"]).agg(
-            volume=("load_id", "count"),
+    if not tendered_df.empty and "lane" in tendered_df.columns:
+        lane_df = tendered_df.groupby(["customer_name", "lane", "week_start"]).agg(
+            tendered=("load_id", "count"),
+            cancelled=("status", lambda x: (x == "CANCELED").sum()),
             revenue=("pricing_total", "sum"),
             otd=("on_time_delivery", "mean"),
         ).reset_index()
+        lane_df["cxl_pct"] = (lane_df["cancelled"] / lane_df["tendered"] * 100).fillna(0).round(1)
         lane_df["otd_pct"] = (lane_df["otd"] * 100).round(1)
+        # For simplicity in UI, we'll map 'volume' to tiered count? No, let's keep 'volume' as tendered count for lane if that's what was there.
+        # Actually lane_df used 'volume' for count. Let's keep it 'volume' = tendered.
+        lane_df = lane_df.rename(columns={"tendered": "volume"})
 
+    # Risks need to know selection week
+    # Return everything
     return {
-        "cleaned": completed_df,
+        "cleaned": tendered_df, # All status loads
         "weekly": weekly_customer,
         "monthly": monthly_customer,
         "lanes": lane_df,

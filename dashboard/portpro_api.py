@@ -78,16 +78,19 @@ class PortProClient:
         return bool(self.access_token)
 
     def _refresh_access_token(self):
-        """Use refresh token to get a new access token."""
+        """Use refresh token to get a new access token via /generate-new-token."""
         if not self.refresh_token:
             raise ValueError("No refresh token available.")
         resp = self._session.get(
-            f"{self.base_url}/token",
+            f"{self.base_url}/generate-new-token",
             headers={"Authorization": f"Bearer {self.refresh_token}"},
         )
         resp.raise_for_status()
         data = resp.json()
         self.access_token = data.get("accessToken", data.get("access_token", ""))
+        new_refresh = data.get("refreshToken", data.get("refresh_token", ""))
+        if new_refresh:
+            self.refresh_token = new_refresh
         self._session.headers["Authorization"] = f"Bearer {self.access_token}"
         save_config({
             "access_token": self.access_token,

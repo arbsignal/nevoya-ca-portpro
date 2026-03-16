@@ -170,6 +170,15 @@ def generate_sample_loads(weeks_back=12, seed=42):
                 # Weight — intentionally sparse (~40% missing, mirroring PortPro gap)
                 weight = round(rng.uniform(20000, 45000), 0) if rng.random() > 0.40 else None
 
+                # Status and Completion logic
+                # ~10% cancellation rate
+                is_cancelled = rng.random() < 0.10
+                status = "CANCELED" if is_cancelled else "Delivered"
+                
+                # For cancelled loads, pricing total might be 0 or stay same (tonu)
+                if is_cancelled:
+                    pricing_total = 0.0 if rng.random() > 0.3 else 150.0 # Some have TONU
+                
                 # Pickup appointment (sometimes different from completed date)
                 pickup_appt = load_date - timedelta(days=int(rng.integers(0, 3)))
 
@@ -193,11 +202,11 @@ def generate_sample_loads(weeks_back=12, seed=42):
                     "pricing_total": pricing_total,
                     "weight_lbs": weight,
                     "load_type": random.choice(["Import", "Export", "Transload"]),
-                    "on_time_pickup": otp,
-                    "on_time_delivery": otd,
+                    "on_time_pickup": otp if not is_cancelled else 0,
+                    "on_time_delivery": otd if not is_cancelled else 0,
                     "exception_code": exception_code,
                     "exception_description": exception_desc,
-                    "status": "Delivered",
+                    "status": status,
                 })
 
     return pd.DataFrame(records)
