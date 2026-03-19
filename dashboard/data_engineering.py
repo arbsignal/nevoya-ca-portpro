@@ -176,7 +176,9 @@ def flatten_loads(raw_loads):
         delivery_city, delivery_state = resolve_delivery_city(load)
 
         # --- Revenue: flat totalAmount (all-in rate) ---
-        total_revenue = float(load.get("totalAmount", 0) or 0)
+        # Only count revenue for finalized statuses; zero out PENDING/DISPATCHED
+        finalized_revenue_statuses = {"COMPLETED", "BILLING", "APPROVED", "DELIVERED", "CANCELED"}
+        total_revenue = float(load.get("totalAmount", 0) or 0) if status in finalized_revenue_statuses else 0.0
 
         records.append({
             "load_id": load.get("reference_number", ""),
