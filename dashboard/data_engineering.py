@@ -128,37 +128,37 @@ def normalize_name(name):
 # ------------------------------------------------------------------
 
 def flatten_loads(raw_loads):
-    """Convert raw API load dicts into a flat DataFrame, including CANCELED loads."""
+    """Convert raw API load dicts into a flat DataFrame.
+
+    Includes every load that has a resolvable completed date, regardless
+    of status.  Revenue is counted for any load with a loadCompletedAt /
+    loadCompletedDate value (i.e. the load actually finished).
+    """
     records = []
-    # Statuses that count as "tendered"
-    tendered_statuses = {"COMPLETED", "BILLING", "APPROVED", "CANCELED", "DISPATCHED", "PENDING", "DELIVERED", "ARRIVED", "PICKED UP"}
-    completed_statuses = {"COMPLETED", "BILLING", "APPROVED", "DELIVERED"}
-    
+
     for load in raw_loads:
         status = str(load.get("status", "")).strip().upper()
-        if status not in tendered_statuses:
-            continue
-            
+
         # --- Date logic ---
-        # For completed loads, use completion date.
-        # For cancelled or in-progress, use scheduled pickup or createdAt.
+        # Primary: explicit completion timestamp
         completed_at = load.get("loadCompletedAt") or load.get("loadCompletedDate") or ""
-        
-        # Fallback for completed statuses if date is missing
-        if not completed_at and status in completed_statuses:
+
+        # Track whether the load has a real completion date (for revenue)
+        has_completion_date = bool(completed_at)
+
+        # Fallback: deliveryTimes → updatedAt → pickup_appointment → createdAt
+        if not completed_at:
             dt_list = load.get("deliveryTimes") or []
             if isinstance(dt_list, list):
                 for dt_entry in dt_list:
                     completed_at = dt_entry.get("deliveryFromTime", "") or ""
                     if completed_at:
                         break
-            if not completed_at:
-                completed_at = load.get("updatedAt", "")
-        
-        # Final fallback for non-completed or if still missing
+        if not completed_at:
+            completed_at = load.get("updatedAt", "")
         if not completed_at:
             completed_at = load.get("pickup_appointment") or load.get("createdAt") or ""
-            
+
         if not completed_at:
             continue
 
@@ -175,10 +175,10 @@ def flatten_loads(raw_loads):
         pickup_city, pickup_state = resolve_pickup_city(load)
         delivery_city, delivery_state = resolve_delivery_city(load)
 
-        # --- Revenue: flat totalAmount (all-in rate) ---
-        # Only count revenue for finalized statuses; zero out PENDING/DISPATCHED
-        finalized_revenue_statuses = {"COMPLETED", "BILLING", "APPROVED", "DELIVERED", "CANCELED"}
-        total_revenue = float(load.get("totalAmount", 0) or 0) if status in finalized_revenue_statuses else 0.0
+        # --- Revenue ---
+        # Count revenue for any load that has a real completion date;
+        # zero out loads still in-progress (no loadCompletedAt).
+        total_revenue = float(load.get("totalAmount", 0) or 0) if has_completion_date else 0.0
 
         records.append({
             "load_id": load.get("reference_number", ""),
@@ -248,7 +248,7 @@ def _skeleton_join(load_df, customer_master, period_col):
 
     agg = load_df.groupby(["customer_name", period_col]).agg(
         tendered=("load_id", "count"),
-        completed=("status", lambda x: x.isin({"COMPLETED", "BILLING", "APPROVED", "DELIVERED"}).sum()),
+        completed=("status", lambda x: (x != "CANCELED").sum()),
         cancelled=("status", lambda x: (x == "CANCELED").sum()),
         revenue=("pricing_total", "sum"),
         avg_revenue=("pricing_total", "mean"),
@@ -493,10 +493,9 @@ def transform_loads(raw_loads_or_df, customer_master_or_df):
     else:
         customer_master = customer_master_or_df.copy()
 
-    # Filter logic: include all tendered loads for volume/CXL tracking
-    # but separate completed loads for revenue/service tracking.
-    tendered_statuses = {"COMPLETED", "BILLING", "APPROVED", "CANCELED", "DISPATCHED", "PENDING", "DELIVERED", "ARRIVED", "PICKED UP"}
-    tendered_df = df[df["status"].isin(tendered_statuses)].copy() if "status" in df.columns else df.copy()
+    # All loads in the DataFrame already have a valid completed date
+    # (filtered during flatten_loads), so no status gatekeeping needed.
+    tendered_df = df.copy()
     
     # Weekly aggregation using tendered_df so we count cancellations
     weekly_customer = _skeleton_join(tendered_df, customer_master, "week_start")
