@@ -131,8 +131,8 @@ def flatten_loads(raw_loads):
     """Convert raw API load dicts into a flat DataFrame, including CANCELED loads."""
     records = []
     # Statuses that count as "tendered"
-    tendered_statuses = {"COMPLETED", "BILLING", "APPROVED", "CANCELED", "DISPATCHED", "PENDING"}
-    completed_statuses = {"COMPLETED", "BILLING", "APPROVED"}
+    tendered_statuses = {"COMPLETED", "BILLING", "APPROVED", "CANCELED", "DISPATCHED", "PENDING", "DELIVERED"}
+    completed_statuses = {"COMPLETED", "BILLING", "APPROVED", "DELIVERED"}
     
     for load in raw_loads:
         status = load.get("status", "").upper()
@@ -248,7 +248,7 @@ def _skeleton_join(load_df, customer_master, period_col):
 
     agg = load_df.groupby(["customer_name", period_col]).agg(
         tendered=("load_id", "count"),
-        completed=("status", lambda x: x.isin({"COMPLETED", "BILLING", "APPROVED", "Delivered"}).sum()),
+        completed=("status", lambda x: x.isin({"COMPLETED", "BILLING", "APPROVED", "DELIVERED"}).sum()),
         cancelled=("status", lambda x: (x == "CANCELED").sum()),
         revenue=("pricing_total", "sum"),
         avg_revenue=("pricing_total", "mean"),
@@ -495,7 +495,7 @@ def transform_loads(raw_loads_or_df, customer_master_or_df):
 
     # Filter logic: include all tendered loads for volume/CXL tracking
     # but separate completed loads for revenue/service tracking.
-    tendered_statuses = {"COMPLETED", "BILLING", "APPROVED", "CANCELED", "DISPATCHED", "PENDING", "Delivered"}
+    tendered_statuses = {"COMPLETED", "BILLING", "APPROVED", "CANCELED", "DISPATCHED", "PENDING", "DELIVERED"}
     tendered_df = df[df["status"].isin(tendered_statuses)].copy() if "status" in df.columns else df.copy()
     
     # Weekly aggregation using tendered_df so we count cancellations
