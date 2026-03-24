@@ -396,12 +396,12 @@ with tab_weekly:
                 "the name normalization or filter is the issue."
             )
             if not all_week_loads.empty:
-                recon_cols = ["load_id", "customer_name", "completed_date", "pricing_total", "lane"]
+                recon_cols = ["load_id", "customer_name", "completed_date", "pricing_total", "lane", "status"]
                 recon = all_week_loads[[c for c in recon_cols if c in all_week_loads.columns]].copy()
                 recon = recon.rename(columns={
                     "load_id": "LOAD_ID", "customer_name": "CUSTOMER",
                     "completed_date": "COMPLETED_DATE", "pricing_total": "REVENUE",
-                    "lane": "LANE",
+                    "lane": "LANE", "status": "STATUS",
                 })
                 if "REVENUE" in recon.columns:
                     recon["REVENUE"] = recon["REVENUE"].apply(lambda x: f"${x:,.0f}")
