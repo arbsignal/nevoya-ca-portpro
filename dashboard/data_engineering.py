@@ -130,9 +130,9 @@ def normalize_name(name):
 def flatten_loads(raw_loads):
     """Convert raw API load dicts into a flat DataFrame.
 
-    Includes every load that has a resolvable completed date, regardless
-    of status.  Revenue is counted for any load with a loadCompletedAt /
-    loadCompletedDate value (i.e. the load actually finished).
+    Only includes loads with an explicit completion date
+    (loadCompletedAt or loadCompletedDate).  No fallback to updatedAt,
+    createdAt, or appointment times — those inflate completed-load counts.
     """
     records = []
 
@@ -140,24 +140,8 @@ def flatten_loads(raw_loads):
         status = str(load.get("status", "")).strip().upper()
 
         # --- Date logic ---
-        # Primary: explicit completion timestamp
+        # Only use explicit completion timestamps — no fallbacks
         completed_at = load.get("loadCompletedAt") or load.get("loadCompletedDate") or ""
-
-        # Track whether the load has a real completion date (for revenue)
-        has_completion_date = bool(completed_at)
-
-        # Fallback: deliveryTimes → updatedAt → pickup_appointment → createdAt
-        if not completed_at:
-            dt_list = load.get("deliveryTimes") or []
-            if isinstance(dt_list, list):
-                for dt_entry in dt_list:
-                    completed_at = dt_entry.get("deliveryFromTime", "") or ""
-                    if completed_at:
-                        break
-        if not completed_at:
-            completed_at = load.get("updatedAt", "")
-        if not completed_at:
-            completed_at = load.get("pickup_appointment") or load.get("createdAt") or ""
 
         if not completed_at:
             continue
@@ -176,9 +160,8 @@ def flatten_loads(raw_loads):
         delivery_city, delivery_state = resolve_delivery_city(load)
 
         # --- Revenue ---
-        # Count revenue for any load that has a real completion date;
-        # zero out loads still in-progress (no loadCompletedAt).
-        total_revenue = float(load.get("totalAmount", 0) or 0) if has_completion_date else 0.0
+        # Every load reaching this point has a real completion date.
+        total_revenue = float(load.get("totalAmount", 0) or 0)
 
         records.append({
             "load_id": load.get("reference_number", ""),
@@ -248,7 +231,7 @@ def _skeleton_join(load_df, customer_master, period_col):
 
     agg = load_df.groupby(["customer_name", period_col]).agg(
         tendered=("load_id", "count"),
-        completed=("status", lambda x: (x != "CANCELED").sum()),
+        completed=("status", lambda x: x.isin(["DELIVERED", "COMPLETED"]).sum()),
         cancelled=("status", lambda x: (x == "CANCELED").sum()),
         revenue=("pricing_total", "sum"),
         avg_revenue=("pricing_total", "mean"),
