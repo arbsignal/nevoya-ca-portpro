@@ -127,19 +127,32 @@ def normalize_name(name):
 # 3. FLATTEN RAW API → DataFrame
 # ------------------------------------------------------------------
 
+VALID_COMPLETED_STATUSES = {
+    "DELIVERED", "COMPLETED",
+    "APPROVED", "BILLING", "UNAPPROVED", "REBILLING",
+    "FULL_PAID", "PARTIAL_PAID",
+}
+
+
 def flatten_loads(raw_loads):
     """Convert raw API load dicts into a flat DataFrame.
 
-    Only includes loads with an explicit completion date
-    (loadCompletedAt or loadCompletedDate).  No fallback to updatedAt,
+    Only includes loads that have reached a completed/billing status
+    (VALID_COMPLETED_STATUSES whitelist) AND have an explicit completion
+    date (loadCompletedAt or loadCompletedDate).  No fallback to updatedAt,
     createdAt, or appointment times — those inflate completed-load counts.
+    Operational statuses (PENDING, DISPATCHED, AVAILABLE, etc.) are
+    excluded even if they have an anomalous completion timestamp.
     """
     records = []
 
     for load in raw_loads:
         status = str(load.get("status", "")).strip().upper()
 
-        # --- Date logic ---
+        # Only process loads that are genuinely completed
+        if status not in VALID_COMPLETED_STATUSES:
+            continue
+
         # Only use explicit completion timestamps — no fallbacks
         completed_at = load.get("loadCompletedAt") or load.get("loadCompletedDate") or ""
 
@@ -231,7 +244,7 @@ def _skeleton_join(load_df, customer_master, period_col):
 
     agg = load_df.groupby(["customer_name", period_col]).agg(
         tendered=("load_id", "count"),
-        completed=("status", lambda x: x.isin(["DELIVERED", "COMPLETED"]).sum()),
+        completed=("status", lambda x: x.isin(VALID_COMPLETED_STATUSES).sum()),
         cancelled=("status", lambda x: (x == "CANCELED").sum()),
         revenue=("pricing_total", "sum"),
         avg_revenue=("pricing_total", "mean"),
